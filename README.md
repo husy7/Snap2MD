@@ -44,8 +44,7 @@ glm_ocr_loacl_use/
 ├── hotkey.py          # 全局快捷键注册（keyboard 库）
 ├── exceptions.py      # AppError 异常层次：ClipboardError / Ollama*Error
 ├── tests/             # pytest 测试（clipboard_io / ocr_engine / 集成边界）
-├── requirements.txt
-└── 设计大纲.md / 优化记录.md   # 设计与迭代记录
+└── requirements.txt
 ```
 
 ## 环境要求
@@ -127,4 +126,4 @@ pytest -v
 
 ## 许可证
 
-MIT License。详见 [LICENSE](LICENSE)（如未附带，请按需添加）。
+MIT License。详见 [LICENSE](LICENSE)。
