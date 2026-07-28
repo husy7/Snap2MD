@@ -58,8 +58,6 @@ glm_ocr_loacl_use/
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/<your-username>/glm_ocr_loacl_use.git
-cd glm_ocr_loacl_use
 
 # 2. 创建虚拟环境
 python -m venv .venv
