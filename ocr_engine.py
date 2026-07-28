@@ -27,6 +27,8 @@ def recognize(img: Image.Image) -> str:
     b64 = _encode(img)
     resp = _call_api(b64)
     text = _extract(resp)
+    text = _strip_reasoning_leakage(text)
+    text = _strip_incomplete_html_tables(text)
     text = _trim_tail_repetition(text)
     return _convert_table(text)
 
@@ -142,6 +144,105 @@ def _convert_table(text: str) -> str:
     def replacer(m):
         return _table_to_markdown(m.group(0))
     return re.sub(r'<table[^>]*>.*?</table>', replacer, text, flags=re.DOTALL)
+
+
+_REASONING_OPENER_RE = re.compile(
+    r'^(?:Actually|Wait|Hmm|Let me|I need to|I\'ll|I should|The prompt|'
+    r'Looking at|So the|First|Now I|The image|One detail|I think|'
+    r'It seems|The user|Let\'s)\b',
+    re.IGNORECASE,
+)
+
+
+def _has_cjk(text: str) -> bool:
+    """文本是否包含 CJK 字符（中文/日文/韩文）。"""
+    return any('\u4e00' <= ch <= '\u9fff' for ch in text)
+
+
+def _is_markdown_structure(line: str) -> bool:
+    """行是否是 Markdown 结构（标题/表格/代码栅栏/列表）。"""
+    s = line.lstrip()
+    if not s:
+        return False
+    if s.startswith('#') or s.startswith('|') or s.startswith('```'):
+        return True
+    if s.startswith(('- ', '* ', '+ ')):
+        return True
+    if re.match(r'^\d+\.\s', s):
+        return True
+    return False
+
+
+def _strip_reasoning_leakage(text: str) -> str:
+    """剥离模型 reasoning 泄漏块。
+
+    glm-ocr 在 prompt 模糊或图片信息少时会把英文思考过程泄漏到 content，
+    典型表现：以 "Actually," / "Wait," / "The prompt says" 等开头的多行英文块。
+
+    检测以 reasoning opener 开头、后续为连续英文非结构行的块并整体移除。
+    遇到空行 / CJK 字符 / Markdown 结构 / 代码栅栏即停止当前块的剥离。
+    代码栅栏（``` ... ```）内的内容一律保留，不参与剥离。
+
+    注意：纯英文 OCR 内容（如英文截图）若以这些词开头会被误删，
+    属于已知折衷，必要时调整 _REASONING_OPENER_RE。
+    """
+    if not text:
+        return text
+
+    lines = text.split('\n')
+    keep: list[str] = []
+    i = 0
+    in_code_fence = False
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # 代码栅栏状态跟踪：栅栏内一律保留
+        if stripped.startswith('```'):
+            in_code_fence = not in_code_fence
+            keep.append(line)
+            i += 1
+            continue
+
+        if (not in_code_fence
+                and stripped
+                and _REASONING_OPENER_RE.match(stripped)
+                and not _has_cjk(stripped)):
+            # 进入 reasoning 块，跳过后续连续英文行
+            i += 1
+            while i < len(lines):
+                next_stripped = lines[i].strip()
+                if not next_stripped:
+                    break  # 空行结束块
+                if _has_cjk(next_stripped):
+                    break  # 中文内容结束块
+                if _is_markdown_structure(next_stripped):
+                    break  # Markdown 结构结束块
+                i += 1
+            # reasoning 行不写入 keep
+        else:
+            keep.append(line)
+            i += 1
+
+    return '\n'.join(keep).strip()
+
+
+def _strip_incomplete_html_tables(text: str) -> str:
+    """移除未闭合的 HTML 表格残片（模型被 NUM_PREDICT 截断时产生）。
+
+    完整的 <table>...</table> 由 _convert_table 转换为 Markdown；
+    无 </table> 的残片在此移除，避免污染 _trim_tail_repetition 的末尾检测。
+
+    从末尾向前迭代剥离：每次找到最后一个 <table，若其后无 </table> 则截断。
+    """
+    while True:
+        last_table = text.rfind('<table')
+        if last_table == -1:
+            return text
+        if '</table>' in text[last_table:]:
+            return text
+        text = text[:last_table].rstrip()
 
 
 def _trim_tail_repetition(text: str) -> str:
