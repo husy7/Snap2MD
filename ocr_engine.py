@@ -27,10 +27,65 @@ def recognize(img: Image.Image) -> str:
     b64 = _encode(img)
     resp = _call_api(b64)
     text = _extract(resp)
-    text = _strip_reasoning_leakage(text)
-    text = _strip_incomplete_html_tables(text)
-    text = _trim_tail_repetition(text)
+    text =  _trim_tail_repetition(text)
     return _convert_table(text)
+
+
+import re
+
+def _trim_tail_repetition(text: str) -> str:
+    """检测并移除重复内容，包括循环重复的整段"""
+    if not text:
+        return text
+    
+    # 专门检测：如果文本以某段内容开头，且后面重复了该内容
+    # 取前 20-50 个字符作为"指纹"
+    for length in range(20, 60, 5):
+        if len(text) < length * 2:
+            break
+        fingerprint = text[:length]
+        # 如果指纹在后面的文本中出现
+        remaining = text[length:]
+        if fingerprint in remaining:
+            # 找到第一次重复的位置
+            repeat_start = remaining.find(fingerprint) + length
+            # 截断到重复开始前
+            return text[:repeat_start].strip()
+    
+    # 按段落检测（如果某个段落重复出现）
+    paragraphs = [p for p in text.split('\n') if p.strip()]
+    if len(paragraphs) > 1:
+        first_para = paragraphs[0]
+        # 如果第二段和第一段相同或高度相似
+        if len(paragraphs) >= 2 and paragraphs[1] == first_para:
+            return paragraphs[0]
+        # 检查是否有任何段落重复
+        seen = set()
+        for i, para in enumerate(paragraphs):
+            if para in seen:
+                # 返回重复之前的所有内容
+                return '\n'.join(paragraphs[:i])
+            seen.add(para)
+    
+    # 原有逻辑
+    m = re.search(r'([\s\S]{2,20}?)\1{3,}\s*$', text)
+    if m:
+        return _trim_tail_repetition(text[:m.start()].rstrip())
+    
+    lines = text.split('\n')
+    n = len(lines)
+    if n >= 4:
+        max_k = min(n // 2, 100)
+        for k in range(max_k, 1, -1):
+            pattern = '\n'.join(lines[n - k:n])
+            if len(pattern) < 21:
+                break
+            if n - k >= k:
+                preceding = '\n'.join(lines[n - 2 * k:n - k])
+                if preceding == pattern:
+                    return _trim_tail_repetition('\n'.join(lines[:n - k]).rstrip())
+    
+    return text
 
 
 def _encode(img: Image.Image) -> str:
@@ -68,13 +123,15 @@ def _call_api(b64: str) -> dict:
         ],
         "stream": False,
         "options": {
+            "temperature": config.TEMPERATURE,
+            "top_p": config.TOP_P,
             "num_ctx": config.NUM_CTX,
             "repeat_penalty": config.REPEAT_PENALTY,
             "num_predict": config.NUM_PREDICT,
+            
         },
         "keep_alive": config.KEEP_ALIVE,
     }
-
     try:
         resp = requests.post(url, json=payload, timeout=config.REQUEST_TIMEOUT)
     except requests.exceptions.ConnectionError:
@@ -245,33 +302,6 @@ def _strip_incomplete_html_tables(text: str) -> str:
         text = text[:last_table].rstrip()
 
 
-def _trim_tail_repetition(text: str) -> str:
-    """末尾重复截断：只处理模型生成结束后的死循环填充，不碰正文。
-
-    两级递归检测：
-    1. 短模式（2-20 字符）末尾连续重复 4+ 次
-    2. 长段（末行块与紧邻前块完全一致）末尾紧邻重复 2+ 次
-    """
-    # 短模式
-    m = re.search(r'([\s\S]{2,20}?)\1{3,}\s*$', text)
-    if m:
-        return _trim_tail_repetition(text[:m.start()].rstrip())
-
-    # 长段行块重复
-    lines = text.split('\n')
-    n = len(lines)
-    if n >= 4:
-        max_k = min(n // 2, 100)
-        for k in range(max_k, 1, -1):
-            pattern = '\n'.join(lines[n - k:n])
-            if len(pattern) < 21:
-                break
-            if n - k >= k:
-                preceding = '\n'.join(lines[n - 2 * k:n - k])
-                if preceding == pattern:
-                    return _trim_tail_repetition('\n'.join(lines[:n - k]).rstrip())
-
-    return text
 
 
 def warmup() -> None:
@@ -281,6 +311,8 @@ def warmup() -> None:
         "model": config.MODEL,
         "keep_alive": config.KEEP_ALIVE,
         "options": {
+            "temperature": config.TEMPERATURE,
+            "top_p": config.TOP_P,
             "num_ctx": config.NUM_CTX,
             "repeat_penalty": config.REPEAT_PENALTY,
             "num_predict": config.NUM_PREDICT,
