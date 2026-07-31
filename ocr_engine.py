@@ -117,8 +117,9 @@ def _call_api(b64: str) -> dict:
         "messages": [
             {
                 "role": "user",
-                "content": config.PROMPT,
                 "images": [b64],
+                "content": config.PROMPT,
+                
             }
         ],
         "stream": False,
